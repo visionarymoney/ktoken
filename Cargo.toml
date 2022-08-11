@@ -1,0 +1,28 @@
+[package]
+name = "workspace"
+version = "0.1.0"
+edition = "2021"
+
+[dev-dependencies]
+anyhow = "1.0.60"
+near-sdk = "4.0.0"
+near-units = "0.2.0"
+tokio = {version = "1.20.1", features = ["full"]}
+workspaces = "0.4.0"
+
+defi = { path = "defi" }
+ft = { path = "ft" }
+
+[profile.release]
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true
+
+[workspace]
+members = [
+ "defi",
+  "ft",
+]
