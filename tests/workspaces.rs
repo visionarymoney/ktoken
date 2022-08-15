@@ -1,3 +1,4 @@
+use near_sdk::json_types::U128;
 use near_units::{parse_gas, parse_near};
 use serde_json::json;
 use workspaces::network::Sandbox;
@@ -5,14 +6,55 @@ use workspaces::prelude::*;
 use workspaces::{Account, AccountId, Contract, Worker};
 
 const FT_TOTAL_SUPPLY: u128 = parse_near!("1,000,000,000 N");
-const AMOUNT: u128 = parse_near!("1N");
+
+async fn register_account(
+    worker: &Worker<Sandbox>,
+    contract: &Contract,
+    account_id: &AccountId,
+) -> anyhow::Result<()> {
+    let res = contract
+        .call(worker, "storage_deposit")
+        .args_json((account_id, Option::<bool>::None))?
+        .deposit(parse_near!("30 mN"))
+        .transact()
+        .await?;
+    assert!(res.is_success());
+
+    Ok(())
+}
+
+async fn balance_of(
+    worker: &Worker<Sandbox>,
+    contract_id: &AccountId,
+    account_id: &AccountId,
+) -> anyhow::Result<U128> {
+    worker
+        .view(
+            contract_id,
+            "ft_balance_of",
+            json!({
+                "account_id": account_id,
+            })
+            .to_string()
+            .into_bytes(),
+        )
+        .await?
+        .json::<U128>()
+}
 
 /// Create our own custom Fungible Token contract and setup the initial state.
-async fn create_custom_ft(owner: &Account, worker: &Worker<Sandbox>) -> anyhow::Result<Contract> {
+async fn create_custom_ft(
+    worker: &Worker<Sandbox>,
+    initial_balance: U128,
+) -> anyhow::Result<(Contract, Account, Account)> {
     let ft = worker.dev_deploy(include_bytes!("../res/ft.wasm")).await?;
 
+    // Create accounts.
+    let owner = worker.dev_create_account().await?;
+    let user = worker.dev_create_account().await?;
+
     // Initialize our FT contract with owner and total supply available
-    // to be traded and transfered into other contracts such as KT.
+    // to be traded and transfered into KT contract.
     ft.call(worker, "new")
         .args_json(json!({
             "owner_id": owner.id(),
@@ -21,67 +63,98 @@ async fn create_custom_ft(owner: &Account, worker: &Worker<Sandbox>) -> anyhow::
         .transact()
         .await?;
 
-    Ok(ft)
-}
-
-/// Register account on the FT contract.
-async fn ft_register_account(
-    ft: &Contract,
-    worker: &Worker<Sandbox>,
-    account: &AccountId,
-) -> anyhow::Result<()> {
-    ft.call(worker, "storage_deposit")
+    // Add initial balance to the user account.
+    register_account(worker, &ft, user.id()).await?;
+    owner
+        .call(worker, ft.id(), "ft_transfer")
         .args_json(json!({
-            "account_id": account.to_string(),
-            "registration_only": true,
+            "receiver_id": user.id(),
+            "amount": initial_balance,
+            "memo": "",
         }))?
-        .deposit(parse_near!("30 mN"))
+        .deposit(1)
         .transact()
         .await?;
-    Ok(())
+
+    Ok((ft, owner, user))
 }
 
 /// Create the KT contract and setup the initial state.
 async fn create_kt(
-    owner: &Account,
     worker: &Worker<Sandbox>,
-    ft: &Contract,
-) -> anyhow::Result<Contract> {
+    stable_ft_id: &AccountId,
+) -> anyhow::Result<(Contract, Account)> {
     let kt = worker.dev_deploy(include_bytes!("../res/kt.wasm")).await?;
+
+    let admin = worker.dev_create_account().await?;
 
     kt.call(worker, "new")
         .args_json(json!({
-            "owner_id": owner.id(),
-            "stable_ft_id": ft.id(),
+            "owner_id": admin.id(),
+            "stable_ft_id": stable_ft_id,
         }))?
         .transact()
         .await?;
 
-    Ok(kt)
+    Ok((kt, admin))
+}
+
+async fn init(
+    worker: &Worker<Sandbox>,
+    initial_balance: U128,
+) -> anyhow::Result<(Contract, Account, Contract, Account)> {
+    let (ft, _, user) = create_custom_ft(worker, initial_balance).await?;
+    let (kt, admin) = create_kt(worker, ft.id()).await?;
+
+    // KT contract must be registered as a FT account.
+    register_account(worker, &ft, kt.id()).await?;
+
+    Ok((ft, user, kt, admin))
 }
 
 #[tokio::test]
-async fn tests() -> anyhow::Result<()> {
+async fn test_buy() -> anyhow::Result<()> {
+    let initial_balance = U128::from(parse_near!("10000 N"));
+    let transfer_amount = U128::from(parse_near!("100 N"));
     let worker = workspaces::sandbox().await?;
-    let owner = worker.root_account()?;
+    let (ft, user, kt, _) = init(&worker, initial_balance).await?;
 
-    ///////////////////////////////////////////////////////////////////////////
-    // Stage 1: Deploy relevant contracts.
-    ///////////////////////////////////////////////////////////////////////////
-
-    let ft = create_custom_ft(&owner, &worker).await?;
-    let kt = create_kt(&owner, &worker, &ft).await?;
-
-    ///////////////////////////////////////////////////////////////////////////
-    // Stage 2: Buy KT tokens.
-    ///////////////////////////////////////////////////////////////////////////
-
-    ft_register_account(&ft, &worker, kt.id()).await?;
-    owner
+    // Buy KT tokens.
+    let res = user
         .call(&worker, ft.id(), "ft_transfer_call")
         .args_json(json!({
             "receiver_id": kt.id(),
-            "amount": AMOUNT.to_string(),
+            "amount": transfer_amount,
+            "msg": "",
+        }))?
+        .gas(parse_gas!("200 Tgas") as u64)
+        .deposit(1)
+        .transact()
+        .await?;
+    assert!(res.is_success());
+    assert!(res.outcome().gas_burnt as u128 <= parse_gas!("30 Tgas"));
+
+    let kt_balance = balance_of(&worker, kt.id(), user.id()).await?;
+    assert_eq!(kt_balance, transfer_amount);
+
+    let ft_balance = balance_of(&worker, ft.id(), user.id()).await?;
+    assert_eq!(ft_balance.0, initial_balance.0 - transfer_amount.0);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_sell() -> anyhow::Result<()> {
+    let initial_balance = U128::from(parse_near!("10000 N"));
+    let transfer_amount = U128::from(parse_near!("100 N"));
+    let worker = workspaces::sandbox().await?;
+    let (ft, user, kt, _) = init(&worker, initial_balance).await?;
+
+    // Buy KT tokens.
+    user.call(&worker, ft.id(), "ft_transfer_call")
+        .args_json(json!({
+            "receiver_id": kt.id(),
+            "amount": transfer_amount,
             "msg": "",
         }))?
         .gas(parse_gas!("200 Tgas") as u64)
@@ -89,84 +162,38 @@ async fn tests() -> anyhow::Result<()> {
         .transact()
         .await?;
 
-    let kt_balance: String = worker
-        .view(
-            kt.id(),
-            "ft_balance_of",
-            json!({
-                "account_id": owner.id(),
-            })
-            .to_string()
-            .into_bytes(),
-        )
-        .await?
-        .json()?;
-    assert_eq!(kt_balance, AMOUNT.to_string());
-
-    let ft_balance: String = worker
-        .view(
-            ft.id(),
-            "ft_balance_of",
-            json!({
-                "account_id": kt.id(),
-            })
-            .to_string()
-            .into_bytes(),
-        )
-        .await?
-        .json()?;
-    assert_eq!(ft_balance, AMOUNT.to_string());
-
-    ///////////////////////////////////////////////////////////////////////////
-    // Stage 4: Sell KT toekns.
-    ///////////////////////////////////////////////////////////////////////////
-
-    owner
+    // Sell KT tokens.
+    let res = user
         .call(&worker, kt.id(), "sell")
-        .args_json(json!({ "amount": AMOUNT.to_string() }))?
+        .args_json(json!({ "amount": transfer_amount }))?
         .gas(parse_gas!("200 Tgas") as u64)
         .deposit(1)
         .transact()
         .await?;
+    assert!(res.is_success());
+    assert!(res.outcome().gas_burnt as u128 <= parse_gas!("2.45 Tgas"));
 
-    let kt_balance: String = worker
-        .view(
-            kt.id(),
-            "ft_balance_of",
-            json!({
-                "account_id": owner.id(),
-            })
-            .to_string()
-            .into_bytes(),
-        )
-        .await?
-        .json()?;
-    assert_eq!(kt_balance, "0");
+    let kt_balance = balance_of(&worker, kt.id(), user.id()).await?;
+    assert_eq!(kt_balance, U128::from(0));
 
-    let ft_balance: String = worker
-        .view(
-            ft.id(),
-            "ft_balance_of",
-            json!({
-                "account_id": owner.id(),
-            })
-            .to_string()
-            .into_bytes(),
-        )
-        .await?
-        .json()?;
+    let ft_balance = balance_of(&worker, ft.id(), user.id()).await?;
+    assert_eq!(ft_balance, initial_balance);
 
-    assert_eq!(ft_balance, FT_TOTAL_SUPPLY.to_string());
+    Ok(())
+}
 
-    ///////////////////////////////////////////////////////////////////////////
-    // Stage 5: Validate sell refund.
-    ///////////////////////////////////////////////////////////////////////////
+#[tokio::test]
+async fn test_sell_refund() -> anyhow::Result<()> {
+    let worker = workspaces::sandbox().await?;
+    let initial_balance = U128::from(parse_near!("10000 N"));
+    let transfer_amount = U128::from(parse_near!("100 N"));
+    let (ft, user, kt, _) = init(&worker, initial_balance).await?;
 
-    owner
-        .call(&worker, ft.id(), "ft_transfer_call")
+    // Buy KT tokens.
+    user.call(&worker, ft.id(), "ft_transfer_call")
         .args_json(json!({
             "receiver_id": kt.id(),
-            "amount": AMOUNT.to_string(),
+            "amount": transfer_amount,
             "msg": "",
         }))?
         .gas(parse_gas!("200 Tgas") as u64)
@@ -174,36 +201,28 @@ async fn tests() -> anyhow::Result<()> {
         .transact()
         .await?;
 
-    // Transfer funds back to FT so the cross contract transfer call on sell fails.
+    // Transfer funds back to FT so the cross contract transfer call fails on sell.
     kt.as_account()
         .call(&worker, ft.id(), "ft_transfer")
-        .args_json(json!({"receiver_id": owner.id(), "amount": AMOUNT.to_string() }))?
+        .args_json(json!({"receiver_id": user.id(), "amount": transfer_amount }))?
         .gas(parse_gas!("200 Tgas") as u64)
         .deposit(1)
         .transact()
         .await?;
 
-    owner
+    // Sell KT tokens.
+    let res = user
         .call(&worker, kt.id(), "sell")
-        .args_json(json!({ "amount": AMOUNT.to_string() }))?
+        .args_json(json!({ "amount": transfer_amount }))?
         .gas(parse_gas!("200 Tgas") as u64)
         .deposit(1)
         .transact()
         .await?;
+    assert!(res.is_success());
+    assert!(res.outcome().gas_burnt as u128 <= parse_gas!("2.45 Tgas"));
 
-    let kt_balance: String = worker
-        .view(
-            kt.id(),
-            "ft_balance_of",
-            json!({
-                "account_id": owner.id(),
-            })
-            .to_string()
-            .into_bytes(),
-        )
-        .await?
-        .json()?;
-    assert_eq!(kt_balance, AMOUNT.to_string());
+    let kt_balance = balance_of(&worker, kt.id(), user.id()).await?;
+    assert_eq!(kt_balance, transfer_amount);
 
     Ok(())
 }
