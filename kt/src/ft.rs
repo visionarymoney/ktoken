@@ -257,16 +257,13 @@ impl FungibleTokenReceiver for Contract {
         amount: U128,
         msg: String,
     ) -> PromiseOrValue<U128> {
-        // Verifying that we were called by accepted stable token.
-        require!(
-            env::predecessor_account_id() == self.stable_ft_id,
-            "Stable token not supported"
-        );
+        self.treasury
+            .assert_asset_enabled(&env::predecessor_account_id());
 
         // Empty message is used for receiving stable coin.
         require!(msg.is_empty());
 
-        self.buy(&sender_id, amount.into());
+        self.internal_buy(&sender_id, amount.into());
 
         PromiseOrValue::Value(U128::from(0))
     }

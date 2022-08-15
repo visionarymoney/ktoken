@@ -80,23 +80,17 @@ async fn create_custom_ft(
 }
 
 /// Create the KT contract and setup the initial state.
-async fn create_kt(
-    worker: &Worker<Sandbox>,
-    stable_ft_id: &AccountId,
-) -> anyhow::Result<(Contract, Account)> {
+async fn create_kt(worker: &Worker<Sandbox>) -> anyhow::Result<(Contract, Account)> {
     let kt = worker.dev_deploy(include_bytes!("../res/kt.wasm")).await?;
 
-    let admin = worker.dev_create_account().await?;
+    let owner = worker.dev_create_account().await?;
 
     kt.call(worker, "new")
-        .args_json(json!({
-            "owner_id": admin.id(),
-            "stable_ft_id": stable_ft_id,
-        }))?
+        .args_json(json!({"owner_id": owner.id()}))?
         .transact()
         .await?;
 
-    Ok((kt, admin))
+    Ok((kt, owner))
 }
 
 async fn init(
@@ -104,12 +98,22 @@ async fn init(
     initial_balance: U128,
 ) -> anyhow::Result<(Contract, Account, Contract, Account)> {
     let (ft, _, user) = create_custom_ft(worker, initial_balance).await?;
-    let (kt, admin) = create_kt(worker, ft.id()).await?;
+    let (kt, owner) = create_kt(worker).await?;
 
     // KT contract must be registered as a FT account.
     register_account(worker, &ft, kt.id()).await?;
 
-    Ok((ft, user, kt, admin))
+    // Register FT as a supported asset in KT contract.
+    owner
+        .call(worker, kt.id(), "add_asset")
+        .args_json(json!({
+            "asset_id": ft.id(),
+            "decimals": 20,
+        }))?
+        .transact()
+        .await?;
+
+    Ok((ft, user, kt, owner))
 }
 
 #[tokio::test]
@@ -165,7 +169,10 @@ async fn test_sell() -> anyhow::Result<()> {
     // Sell KT tokens.
     let res = user
         .call(&worker, kt.id(), "sell")
-        .args_json(json!({ "amount": transfer_amount }))?
+        .args_json(json!({
+        "asset_id": ft.id(),
+         "amount": transfer_amount,
+         }))?
         .gas(parse_gas!("200 Tgas") as u64)
         .deposit(1)
         .transact()
@@ -204,7 +211,10 @@ async fn test_sell_refund() -> anyhow::Result<()> {
     // Transfer funds back to FT so the cross contract transfer call fails on sell.
     kt.as_account()
         .call(&worker, ft.id(), "ft_transfer")
-        .args_json(json!({"receiver_id": user.id(), "amount": transfer_amount }))?
+        .args_json(json!({
+           "receiver_id": user.id(),
+           "amount": transfer_amount,
+        }))?
         .gas(parse_gas!("200 Tgas") as u64)
         .deposit(1)
         .transact()
@@ -213,7 +223,10 @@ async fn test_sell_refund() -> anyhow::Result<()> {
     // Sell KT tokens.
     let res = user
         .call(&worker, kt.id(), "sell")
-        .args_json(json!({ "amount": transfer_amount }))?
+        .args_json(json!({
+           "asset_id": ft.id(),
+           "amount": transfer_amount,
+        }))?
         .gas(parse_gas!("200 Tgas") as u64)
         .deposit(1)
         .transact()

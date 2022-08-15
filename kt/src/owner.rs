@@ -30,7 +30,7 @@ mod tests {
             .signer_account_id(accounts(1))
             .predecessor_account_id(accounts(1));
         testing_env!(context.build());
-        let contract = Contract::new(accounts(2), accounts(3));
+        let contract = Contract::new(accounts(2));
 
         testing_env!(context.predecessor_account_id(accounts(1)).build());
         contract.assert_owner();
@@ -44,7 +44,7 @@ mod tests {
             .signer_account_id(accounts(1))
             .predecessor_account_id(accounts(1));
         testing_env!(context.build());
-        let contract = Contract::new(accounts(2), accounts(3));
+        let contract = Contract::new(accounts(2));
 
         testing_env!(context.predecessor_account_id(accounts(2)).build());
         assert_eq!(contract.get_owner(), accounts(2));
@@ -58,7 +58,7 @@ mod tests {
             .signer_account_id(accounts(1))
             .predecessor_account_id(accounts(1));
         testing_env!(context.build());
-        let mut contract = Contract::new(accounts(2), accounts(3));
+        let mut contract = Contract::new(accounts(2));
 
         testing_env!(context.predecessor_account_id(accounts(2)).build());
         contract.set_owner(accounts(4));
