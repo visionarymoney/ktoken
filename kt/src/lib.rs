@@ -1,4 +1,5 @@
 mod ft;
+mod owner;
 
 use near_contract_standards::fungible_token::events::FtMint;
 use near_contract_standards::fungible_token::metadata::{FungibleTokenMetadata, FT_METADATA_SPEC};
@@ -10,7 +11,7 @@ use near_sdk::{
     BorshStorageKey, Gas, PanicOnDefault, Promise, PromiseResult,
 };
 
-use crate::ft::FungibleToken;
+use crate::ft::*;
 
 #[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]
@@ -154,11 +155,11 @@ mod tests {
     fn test_new() {
         let mut context = get_context(accounts(1));
         testing_env!(context.build());
-        let contract = Contract::new(accounts(1), accounts(3));
+        let contract = Contract::new(accounts(2), accounts(3));
         testing_env!(context.is_view(true).build());
-        assert_eq!(contract.owner_id, accounts(1));
+        assert_eq!(contract.owner_id, accounts(2));
         assert_eq!(contract.ft_total_supply().0, 0);
-        assert_eq!(contract.ft_balance_of(accounts(1)).0, 0);
+        assert_eq!(contract.ft_balance_of(accounts(2)).0, 0);
     }
 
     #[test]
