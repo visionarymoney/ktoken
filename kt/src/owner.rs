@@ -14,10 +14,8 @@ impl Ownable for Contract {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use near_contract_standards::upgrade::Ownable;
-    use near_sdk::{
-        test_utils::{accounts, VMContextBuilder},
-        testing_env,
-    };
+    use near_sdk::test_utils::{accounts, VMContextBuilder};
+    use near_sdk::testing_env;
 
     use crate::Contract;
 
@@ -30,7 +28,7 @@ mod tests {
             .signer_account_id(accounts(1))
             .predecessor_account_id(accounts(1));
         testing_env!(context.build());
-        let contract = Contract::new(accounts(2));
+        let contract = Contract::new(accounts(2), accounts(4));
 
         testing_env!(context.predecessor_account_id(accounts(1)).build());
         contract.assert_owner();
@@ -44,7 +42,7 @@ mod tests {
             .signer_account_id(accounts(1))
             .predecessor_account_id(accounts(1));
         testing_env!(context.build());
-        let contract = Contract::new(accounts(2));
+        let contract = Contract::new(accounts(2), accounts(4));
 
         testing_env!(context.predecessor_account_id(accounts(2)).build());
         assert_eq!(contract.get_owner(), accounts(2));
@@ -58,7 +56,7 @@ mod tests {
             .signer_account_id(accounts(1))
             .predecessor_account_id(accounts(1));
         testing_env!(context.build());
-        let mut contract = Contract::new(accounts(2));
+        let mut contract = Contract::new(accounts(2), accounts(4));
 
         testing_env!(context.predecessor_account_id(accounts(2)).build());
         contract.set_owner(accounts(4));

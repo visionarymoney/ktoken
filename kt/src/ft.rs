@@ -10,14 +10,16 @@ use near_sdk::collections::LookupMap;
 use near_sdk::env::{self, log_str};
 use near_sdk::json_types::U128;
 use near_sdk::{
-    assert_one_yocto, near_bindgen, require, AccountId, Balance, Gas, IntoStorageKey,
-    PromiseOrValue, PromiseResult,
+    assert_one_yocto, near_bindgen, require, AccountId, Balance, IntoStorageKey, PromiseOrValue,
+    PromiseResult,
 };
 
-use crate::{Contract, ContractExt};
-
-const GAS_FOR_RESOLVE_TRANSFER: Gas = Gas(5_000_000_000_000);
-const GAS_FOR_TRANSFER_CALL: Gas = Gas(25_000_000_000_000 + GAS_FOR_RESOLVE_TRANSFER.0);
+use crate::asset::AssetStatus;
+use crate::oracle::ext_oracle;
+use crate::{
+    ext_self, Contract, ContractExt, GAS_FOR_BUY_WITH_PRICE, GAS_FOR_GET_EXCHANGE_PRICE,
+    GAS_FOR_ON_TRANSFER, GAS_FOR_RESOLVE_TRANSFER, GAS_FOR_TRANSFER_CALL,
+};
 
 /// Implementation of a FungibleToken NEP-141 standard.
 #[derive(BorshDeserialize, BorshSerialize)]
@@ -257,27 +259,28 @@ impl FungibleTokenReceiver for Contract {
         amount: U128,
         msg: String,
     ) -> PromiseOrValue<U128> {
-        self.treasury
-            .assert_asset_enabled(&env::predecessor_account_id());
+        require!(
+            env::prepaid_gas() > GAS_FOR_ON_TRANSFER,
+            "More gas is required"
+        );
 
-        // Empty message is used for receiving stable coin.
+        let contract_id = env::current_account_id();
+        let asset_id = env::predecessor_account_id();
+
+        self.treasury
+            .assert_asset_status(&asset_id, AssetStatus::Enabled);
+
+        // Empty message is used for receiving stable assets.
         require!(msg.is_empty());
 
-        self.internal_buy(&sender_id, amount.into());
-
-        PromiseOrValue::Value(U128::from(0))
-    }
-}
-
-impl FungibleTokenResolver for FungibleToken {
-    fn ft_resolve_transfer(
-        &mut self,
-        sender_id: AccountId,
-        receiver_id: AccountId,
-        amount: U128,
-    ) -> U128 {
-        self.internal_ft_resolve_transfer(&sender_id, receiver_id, amount)
-            .0
+        ext_oracle::ext(self.oracle_id.clone())
+            .with_static_gas(GAS_FOR_GET_EXCHANGE_PRICE)
+            .get_exchange_price(asset_id.clone())
+            .then(
+                ext_self::ext(contract_id)
+                    .with_static_gas(GAS_FOR_BUY_WITH_PRICE)
+                    .buy_with_price(sender_id, asset_id, amount),
+            )
             .into()
     }
 }

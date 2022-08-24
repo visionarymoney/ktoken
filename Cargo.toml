@@ -14,6 +14,7 @@ workspaces = "0.4.0"
 
 kt = { path = "kt" }
 ft = { path = "test-contract-ft" }
+oracle = { path = "test-contract-oracle" }
 
 [profile.release]
 codegen-units = 1
@@ -27,4 +28,5 @@ overflow-checks = true
 members = [
   "kt",
   "test-contract-ft",
+  "test-contract-oracle",
 ]
