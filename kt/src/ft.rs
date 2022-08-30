@@ -9,6 +9,7 @@ use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::collections::LookupMap;
 use near_sdk::env::{self, log_str};
 use near_sdk::json_types::U128;
+use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::{
     assert_one_yocto, near_bindgen, require, AccountId, Balance, IntoStorageKey, PromiseOrValue,
     PromiseResult,
@@ -16,6 +17,7 @@ use near_sdk::{
 
 use crate::asset::AssetStatus;
 use crate::oracle::ext_oracle;
+use crate::price::ExpectedPrice;
 use crate::{
     ext_self, Contract, ContractExt, GAS_FOR_BUY_WITH_PRICE, GAS_FOR_GET_EXCHANGE_PRICE,
     GAS_FOR_ON_TRANSFER, GAS_FOR_RESOLVE_TRANSFER, GAS_FOR_TRANSFER_CALL,
@@ -251,6 +253,23 @@ impl FungibleTokenMetadataProvider for Contract {
     }
 }
 
+// TODO: impl ft_data_to_msg for Contract
+
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+enum OnTransferMessage {
+    Buy(Option<(U128, u8, U128)>),
+    // TODO: Rebalance
+}
+
+impl TryFrom<&str> for OnTransferMessage {
+    type Error = near_sdk::serde_json::Error;
+
+    fn try_from(json: &str) -> Result<Self, Self::Error> {
+        near_sdk::serde_json::from_str(json)
+    }
+}
+
 #[near_bindgen]
 impl FungibleTokenReceiver for Contract {
     fn ft_on_transfer(
@@ -267,20 +286,28 @@ impl FungibleTokenReceiver for Contract {
         let contract_id = env::current_account_id();
         let asset_id = env::predecessor_account_id();
 
-        self.treasury
-            .assert_asset_status(&asset_id, AssetStatus::Enabled);
+        let msg = OnTransferMessage::try_from(msg.as_str())
+            .unwrap_or_else(|_| env::panic_str(format!("Invalid message: {}", msg).as_ref()));
 
-        // Empty message is used for receiving stable assets.
-        require!(msg.is_empty());
+        match msg {
+            OnTransferMessage::Buy(expected) => {
+                let expected = expected.map(|(multiplier, decimals, slippage)| {
+                    ExpectedPrice::new(multiplier, decimals, slippage)
+                });
 
-        ext_oracle::ext(self.oracle_id.clone())
-            .with_static_gas(GAS_FOR_GET_EXCHANGE_PRICE)
-            .get_exchange_price(asset_id.clone())
-            .then(
-                ext_self::ext(contract_id)
-                    .with_static_gas(GAS_FOR_BUY_WITH_PRICE)
-                    .buy_with_price(sender_id, asset_id, amount),
-            )
-            .into()
+                self.treasury
+                    .assert_asset_status(&asset_id, AssetStatus::Enabled);
+
+                ext_oracle::ext(self.oracle_id.clone())
+                    .with_static_gas(GAS_FOR_GET_EXCHANGE_PRICE)
+                    .get_exchange_price(asset_id.clone())
+                    .then(
+                        ext_self::ext(contract_id)
+                            .with_static_gas(GAS_FOR_BUY_WITH_PRICE)
+                            .buy_with_price(sender_id, asset_id, amount, expected),
+                    )
+                    .into()
+            }
+        }
     }
 }

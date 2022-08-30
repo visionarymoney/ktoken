@@ -144,7 +144,12 @@ impl Contract {
     }
 
     #[payable]
-    pub fn sell(&mut self, asset_id: AssetId, amount: U128) -> Promise {
+    pub fn sell(
+        &mut self,
+        asset_id: AssetId,
+        amount: U128,
+        expected: Option<ExpectedPrice>,
+    ) -> Promise {
         assert_one_yocto();
         require!(
             env::prepaid_gas() > GAS_FOR_SELL_WITH_PRICE,
@@ -160,6 +165,7 @@ impl Contract {
                 env::predecessor_account_id(),
                 asset_id,
                 amount,
+                expected,
             ))
     }
 }
@@ -171,6 +177,7 @@ pub trait ContractResolver {
         account_id: AccountId,
         asset_id: AssetId,
         amount: U128,
+        expected: Option<ExpectedPrice>,
         #[callback_unwrap] price: PriceData,
     ) -> U128;
     fn sell_with_price(
@@ -178,6 +185,7 @@ pub trait ContractResolver {
         account_id: AccountId,
         asset_id: AssetId,
         amount: U128,
+        expected: Option<ExpectedPrice>,
         #[callback_unwrap] price: PriceData,
     ) -> Promise;
     fn resolve_sell(
@@ -197,9 +205,15 @@ impl ContractResolver for Contract {
         account_id: AccountId,
         asset_id: AssetId,
         amount: U128,
+        expected: Option<ExpectedPrice>,
         #[callback_unwrap] price: PriceData,
     ) -> U128 {
-        self.internal_buy(&account_id, &asset_id, amount.into(), price.into());
+        let price = price.into();
+        if let Some(expected) = expected {
+            expected.assert_price(price);
+        }
+
+        self.internal_buy(&account_id, &asset_id, amount.into(), price);
 
         U128::from(0)
     }
@@ -210,9 +224,15 @@ impl ContractResolver for Contract {
         account_id: AccountId,
         asset_id: AssetId,
         amount: U128,
+        expected: Option<ExpectedPrice>,
         #[callback_unwrap] price: PriceData,
     ) -> Promise {
-        let asset_amount = self.internal_sell(&account_id, &asset_id, amount.into(), price.into());
+        let price = price.into();
+        if let Some(expected) = expected {
+            expected.assert_price(price);
+        }
+
+        let asset_amount = self.internal_sell(&account_id, &asset_id, amount.into(), price);
 
         ext_ft_transfer::ext(asset_id.clone())
             .with_static_gas(GAS_FOR_TRANSFER)

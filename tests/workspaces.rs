@@ -5,6 +5,28 @@ use workspaces::network::Sandbox;
 use workspaces::prelude::*;
 use workspaces::{Account, AccountId, Contract, Worker};
 
+/// Create our own custom Oracle contract and setup the initial state.
+async fn create_custom_oracle(
+    worker: &Worker<Sandbox>,
+    recency_duration: U64,
+) -> anyhow::Result<Contract> {
+    let oracle = worker
+        .dev_deploy(include_bytes!("../res/oracle.wasm"))
+        .await?;
+
+    // Initialize our Oracle contract .
+    oracle
+        .call(worker, "new")
+        .args_json(json!({
+            "recency_duration": recency_duration,
+        }))?
+        .transact()
+        .await?;
+
+    Ok(oracle)
+}
+
+// Set Oracle exchange price
 async fn set_exchange_price(
     worker: &Worker<Sandbox>,
     contract: &Contract,
@@ -26,27 +48,6 @@ async fn set_exchange_price(
         .is_success());
 
     Ok(())
-}
-
-/// Create our own custom Oracle contract and setup the initial state.
-async fn create_custom_oracle(
-    worker: &Worker<Sandbox>,
-    recency_duration: U64,
-) -> anyhow::Result<Contract> {
-    let oracle = worker
-        .dev_deploy(include_bytes!("../res/oracle.wasm"))
-        .await?;
-
-    // Initialize our Oracle contract .
-    oracle
-        .call(worker, "new")
-        .args_json(json!({
-            "recency_duration": recency_duration,
-        }))?
-        .transact()
-        .await?;
-
-    Ok(oracle)
 }
 
 async fn balance_of(
@@ -140,25 +141,27 @@ async fn init(
     Ok((oracle, ft, user, kt, owner))
 }
 
-#[tokio::test]
-async fn test_buy() -> anyhow::Result<()> {
-    let ft_amount = U128::from(1_000_000);
-    let kt_amount = U128::from(1_000_000_000_000_000_000);
-    let worker = workspaces::sandbox().await?;
-    let (oracle, ft, user, kt, _) = init(&worker).await?;
+/// Buy KT tokens.
+async fn buy_kt(
+    worker: &Worker<Sandbox>,
+    user: &Account,
+    contract_id: &AccountId,
+    receiver_id: &AccountId,
+    amount: U128,
+    // (multiplier, decimals, slippage)
+    expected: Option<(U128, u8, U128)>,
+) -> anyhow::Result<()> {
+    let msg = json!({
+        "Buy": expected,
+    })
+    .to_string();
 
-    // Set Oracle price
-    set_exchange_price(&worker, &oracle, ft.id(), U128::from(10000), 10).await?;
-
-    let user_ft_balance = balance_of(&worker, ft.id(), user.id()).await?;
-
-    // Buy KT tokens.
     let res = user
-        .call(&worker, ft.id(), "ft_transfer_call")
+        .call(worker, contract_id, "ft_transfer_call")
         .args_json(json!({
-            "receiver_id": kt.id(),
-            "amount": ft_amount,
-            "msg": "",
+            "receiver_id": receiver_id,
+            "amount": amount,
+            "msg": msg,
         }))?
         .gas(parse_gas!("200 Tgas") as u64)
         .deposit(1)
@@ -166,6 +169,60 @@ async fn test_buy() -> anyhow::Result<()> {
         .await?;
     assert!(res.is_success());
     assert!(res.outcome().gas_burnt as u128 <= parse_gas!("30 Tgas"));
+
+    Ok(())
+}
+
+/// Sell KT tokens.
+async fn sell(
+    worker: &Worker<Sandbox>,
+    user: &Account,
+    contract_id: &AccountId,
+    asset_id: &AccountId,
+    amount: U128,
+    // (multiplier, decimals, slippage)
+    expected: Option<(U128, u8, U128)>,
+) -> anyhow::Result<()> {
+    let res = user
+        .call(worker, contract_id, "sell")
+        .args_json(json!({
+           "asset_id": asset_id,
+           "amount": amount,
+              "expected": expected.map(|(multiplier, decimals, slippage)| {
+                  json!({
+                      "multiplier": multiplier,
+                      "decimals": decimals,
+                      "slippage": slippage,
+                  })
+              }),
+        }))?
+        .gas(parse_gas!("200 Tgas") as u64)
+        .deposit(1)
+        .transact()
+        .await?;
+    assert!(res.is_success());
+    assert!(res.outcome().gas_burnt as u128 <= parse_gas!("2.45 Tgas"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_buy() -> anyhow::Result<()> {
+    let ft_amount = U128::from(1_000_000);
+    let kt_amount = U128::from(1_000_000_000_000_000_000);
+    let worker = workspaces::sandbox().await?;
+    let (oracle, ft, user, kt, _) = init(&worker).await?;
+
+    let price = U128::from(10000);
+    let decimals = 10;
+    let slippage = U128::from(1);
+    let expected = Some((price, decimals, slippage));
+
+    set_exchange_price(&worker, &oracle, ft.id(), price, decimals).await?;
+
+    let user_ft_balance = balance_of(&worker, ft.id(), user.id()).await?;
+
+    buy_kt(&worker, &user, ft.id(), kt.id(), ft_amount, expected).await?;
 
     let kt_balance = balance_of(&worker, kt.id(), user.id()).await?;
     assert_eq!(kt_balance, kt_amount);
@@ -186,38 +243,18 @@ async fn test_sell() -> anyhow::Result<()> {
     let worker = workspaces::sandbox().await?;
     let (oracle, ft, user, kt, _) = init(&worker).await?;
 
-    // Set Oracle price
-    set_exchange_price(&worker, &oracle, ft.id(), U128::from(10000), 10).await?;
+    let price = U128::from(10000);
+    let decimals = 10;
+    let slippage = U128::from(1);
+    let expected = Some((price, decimals, slippage));
 
-    // Buy KT tokens.
-    assert!(user
-        .call(&worker, ft.id(), "ft_transfer_call")
-        .args_json(json!({
-            "receiver_id": kt.id(),
-            "amount": ft_amount,
-            "msg": "",
-        }))?
-        .gas(parse_gas!("200 Tgas") as u64)
-        .deposit(1)
-        .transact()
-        .await?
-        .is_success());
+    set_exchange_price(&worker, &oracle, ft.id(), price, decimals).await?;
+
+    buy_kt(&worker, &user, ft.id(), kt.id(), ft_amount, expected).await?;
 
     let user_ft_balance = balance_of(&worker, ft.id(), user.id()).await?;
 
-    // Sell KT tokens.
-    let res = user
-        .call(&worker, kt.id(), "sell")
-        .args_json(json!({
-           "asset_id": ft.id(),
-           "amount": kt_amount,
-        }))?
-        .gas(parse_gas!("200 Tgas") as u64)
-        .deposit(1)
-        .transact()
-        .await?;
-    assert!(res.is_success());
-    assert!(res.outcome().gas_burnt as u128 <= parse_gas!("2.45 Tgas"));
+    sell(&worker, &user, kt.id(), ft.id(), kt_amount, expected).await?;
 
     let kt_balance = balance_of(&worker, kt.id(), user.id()).await?;
     assert_eq!(kt_balance, U128::from(0));
@@ -238,20 +275,9 @@ async fn test_sell_refund() -> anyhow::Result<()> {
     let worker = workspaces::sandbox().await?;
     let (oracle, ft, user, kt, _) = init(&worker).await?;
 
-    // Set Oracle price
     set_exchange_price(&worker, &oracle, ft.id(), U128::from(10000), 10).await?;
 
-    // Buy KT tokens.
-    user.call(&worker, ft.id(), "ft_transfer_call")
-        .args_json(json!({
-            "receiver_id": kt.id(),
-            "amount": ft_amount,
-            "msg": "",
-        }))?
-        .gas(parse_gas!("200 Tgas") as u64)
-        .deposit(1)
-        .transact()
-        .await?;
+    buy_kt(&worker, &user, ft.id(), kt.id(), ft_amount, None).await?;
 
     // Transfer assets back so the cross contract transfer call fails on sell.
     kt.as_account()
@@ -265,19 +291,7 @@ async fn test_sell_refund() -> anyhow::Result<()> {
         .transact()
         .await?;
 
-    // Sell KT tokens.
-    let res = user
-        .call(&worker, kt.id(), "sell")
-        .args_json(json!({
-           "asset_id": ft.id(),
-           "amount": kt_amount,
-        }))?
-        .gas(parse_gas!("200 Tgas") as u64)
-        .deposit(1)
-        .transact()
-        .await?;
-    assert!(res.is_success());
-    assert!(res.outcome().gas_burnt as u128 <= parse_gas!("2.45 Tgas"));
+    sell(&worker, &user, kt.id(), ft.id(), ft_amount, None).await?;
 
     let kt_balance = balance_of(&worker, kt.id(), user.id()).await?;
     assert_eq!(kt_balance, kt_amount);
