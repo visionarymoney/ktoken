@@ -91,23 +91,21 @@ impl Contract {
         &mut self,
         account_id: &AccountId,
         asset_id: &AssetId,
-        amount: Balance,
+        asset_amount: Balance,
+        asset_decimals: u8,
         price: ExchangePrice,
     ) {
-        let asset = self
-            .treasury
-            .assert_asset_status(asset_id, AssetStatus::Enabled);
+        self.treasury.internal_deposit(asset_id, asset_amount);
 
-        self.treasury.internal_deposit(asset_id, amount);
-
-        let amount = exchange_asset_to_kt(amount, asset.decimals(), price);
+        let kt_amount = exchange_asset_to_kt(asset_amount, asset_decimals, price)
+            .unwrap_or_else(|| env::panic_str("Exchange amount overflow"));
 
         // TODO: withdraw buying fees
-        self.token.internal_deposit(account_id, amount);
+        self.token.internal_deposit(account_id, kt_amount);
 
         FtMint {
             owner_id: account_id,
-            amount: &U128::from(amount),
+            amount: &U128::from(kt_amount),
             memo: None,
         }
         .emit()
@@ -117,24 +115,22 @@ impl Contract {
         &mut self,
         account_id: &AccountId,
         asset_id: &AssetId,
-        amount: Balance,
+        kt_amount: Balance,
+        asset_decimals: u8,
         price: ExchangePrice,
     ) -> U128 {
-        let asset = self
-            .treasury
-            .assert_asset_status(asset_id, AssetStatus::Enabled);
-
         // TODO: withdraw profit fees
-        self.token.internal_withdraw(account_id, amount);
+        self.token.internal_withdraw(account_id, kt_amount);
 
         FtBurn {
             owner_id: account_id,
-            amount: &U128::from(amount),
+            amount: &U128::from(kt_amount),
             memo: None,
         }
         .emit();
 
-        let asset_amount = exchange_kt_to_asset(amount, asset.decimals(), price);
+        let asset_amount = exchange_kt_to_asset(kt_amount, asset_decimals, price)
+            .unwrap_or_else(|| env::panic_str("Exchange amount overflow"));
 
         self.treasury.internal_withdraw(asset_id, asset_amount);
 
@@ -204,14 +200,19 @@ impl ContractResolver for Contract {
         asset_id: AssetId,
         amount: U128,
         expected: Option<ExpectedPrice>,
-        #[callback_unwrap] price: PriceData,
+        #[callback_unwrap] data: PriceData,
     ) -> U128 {
-        let price = price.into();
+        let asset = self
+            .treasury
+            .assert_asset_status(&asset_id, AssetStatus::Enabled);
+
+        let price = ExchangePrice::from_price_data(&asset, data);
+
         if let Some(expected) = expected {
             expected.assert_price(price);
         }
 
-        self.internal_buy(&account_id, &asset_id, amount.into(), price);
+        self.internal_buy(&account_id, &asset_id, amount.into(), asset.decimals, price);
 
         U128::from(0)
     }
@@ -223,14 +224,20 @@ impl ContractResolver for Contract {
         asset_id: AssetId,
         amount: U128,
         expected: Option<ExpectedPrice>,
-        #[callback_unwrap] price: PriceData,
+        #[callback_unwrap] data: PriceData,
     ) -> Promise {
-        let price = price.into();
+        let asset = self
+            .treasury
+            .assert_asset_status(&asset_id, AssetStatus::Enabled);
+
+        let price = ExchangePrice::from_price_data(&asset, data);
+
         if let Some(expected) = expected {
             expected.assert_price(price);
         }
 
-        let asset_amount = self.internal_sell(&account_id, &asset_id, amount.into(), price);
+        let asset_amount =
+            self.internal_sell(&account_id, &asset_id, amount.into(), asset.decimals, price);
 
         ext_ft_transfer::ext(asset_id.clone())
             .with_static_gas(GAS_FOR_TRANSFER)
@@ -344,19 +351,18 @@ mod tests {
         testing_env!(context.build());
         let mut contract = Contract::new(owner_id.clone(), oracle_id);
 
+        let amount = 1_000_000;
+        let decimals = 6;
         testing_env!(context.predecessor_account_id(owner_id).build());
-        contract.add_asset(&asset_id, 6);
+        contract.add_asset(&asset_id, decimals);
 
         testing_env!(context
             .attached_deposit(ONE_YOCTO)
             .predecessor_account_id(account_id.clone())
             .build());
         let price = ExchangePrice::new(10001, 10);
-        contract.internal_buy(&account_id, &asset_id, 1_000_000, price);
-        assert_eq!(
-            contract.treasury.supported_assets()[0].1.balance(),
-            1_000_000
-        );
+        contract.internal_buy(&account_id, &asset_id, amount, decimals, price);
+        assert_eq!(contract.treasury.supported_assets()[0].1.balance, amount);
         assert_eq!(
             contract.ft_balance_of(account_id).0,
             999_900_009_999_000_099
@@ -371,17 +377,25 @@ mod tests {
         testing_env!(context.build());
         let mut contract = Contract::new(owner_id.clone(), oracle_id);
 
+        let amount = 1_000_000;
+        let decimals = 6;
         testing_env!(context.predecessor_account_id(owner_id).build());
-        contract.add_asset(&asset_id, 6);
+        contract.add_asset(&asset_id, decimals);
 
         testing_env!(context
             .attached_deposit(ONE_YOCTO)
             .predecessor_account_id(account_id.clone())
             .build());
         let price = ExchangePrice::new(10001, 10);
-        contract.internal_buy(&account_id, &asset_id, 1_000_000, price);
-        contract.internal_sell(&account_id, &asset_id, 999_900_009_999_000_099, price);
-        assert_eq!(contract.treasury.supported_assets()[0].1.balance(), 1); // Rounding error
+        contract.internal_buy(&account_id, &asset_id, amount, decimals, price);
+        contract.internal_sell(
+            &account_id,
+            &asset_id,
+            999_900_009_999_000_099,
+            decimals,
+            price,
+        );
+        assert_eq!(contract.treasury.supported_assets()[0].1.balance, 1); // Rounding error
         assert_eq!(contract.ft_balance_of(account_id).0, 0);
     }
 }

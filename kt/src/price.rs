@@ -41,34 +41,42 @@ impl ExpectedPrice {
     }
 }
 
-// TODO: handle arithmetic overflow
-
-fn convert_decimals(amount: Balance, from: u8, to: u8) -> Balance {
+fn convert_decimals(amount: Balance, from: u8, to: u8) -> Option<Balance> {
     match from.cmp(&to) {
-        std::cmp::Ordering::Equal => amount,
-        std::cmp::Ordering::Less => amount * 10u128.pow(u32::from(to - from)),
-        std::cmp::Ordering::Greater => amount / 10u128.pow(u32::from(from - to)),
+        std::cmp::Ordering::Equal => Some(amount),
+        std::cmp::Ordering::Less => amount.checked_mul(10u128.pow(u32::from(to - from))),
+        std::cmp::Ordering::Greater => amount.checked_div(10u128.pow(u32::from(from - to))),
     }
 }
 
-pub fn exchange_asset_to_kt(amount: Balance, decimals: u8, price: ExchangePrice) -> Balance {
-    price.assert_valid(decimals);
-
-    let amount = convert_decimals(amount, decimals, KT_DECIMALS);
+pub fn exchange_asset_to_kt(
+    asset_amount: Balance,
+    asset_decimals: u8,
+    price: ExchangePrice,
+) -> Option<Balance> {
+    let amount = convert_decimals(asset_amount, asset_decimals, KT_DECIMALS)?;
 
     // amount / price
-    // amount * 10**(price.decimals - decimals) / price.multiplier
-    amount * 10u128.pow((price.decimals - decimals) as u32) / price.multiplier
+    // amount * 10^(price.decimals - asset_decimals) / price.multiplier
+    let diff = price.decimals.checked_sub(asset_decimals)?;
+    amount
+        .checked_mul(10u128.pow(u32::from(diff)))?
+        .checked_div(price.multiplier)
 }
 
-pub fn exchange_kt_to_asset(amount: Balance, decimals: u8, price: ExchangePrice) -> Balance {
-    price.assert_valid(decimals);
-
+pub fn exchange_kt_to_asset(
+    amount: Balance,
+    asset_decimals: u8,
+    price: ExchangePrice,
+) -> Option<Balance> {
     // amount * price
-    // amount * price.multiplier / 10**(price.decimals - decimals)
-    let amount = amount * price.multiplier / 10u128.pow((price.decimals - decimals) as u32);
+    // amount * price.multiplier / 10^(price.decimals - asset_decimals)
+    let diff = price.decimals.checked_sub(asset_decimals)?;
+    let amount = amount
+        .checked_mul(price.multiplier)?
+        .checked_div(10u128.pow(diff as u32))?;
 
-    convert_decimals(amount, KT_DECIMALS, decimals)
+    convert_decimals(amount, KT_DECIMALS, asset_decimals)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -114,108 +122,100 @@ mod tests {
 
     #[test]
     fn test_convert_decimals() {
-        assert_eq!(convert_decimals(529944008, 32, 28), 52994);
-        assert_eq!(convert_decimals(52994, 28, 32), 529940000);
-        assert_eq!(convert_decimals(52994, 28, 28), 52994);
+        assert_eq!(convert_decimals(529944008, 32, 28), Some(52994));
+        assert_eq!(convert_decimals(52994, 28, 32), Some(529940000));
+        assert_eq!(convert_decimals(52994, 28, 28), Some(52994));
     }
 
     #[test]
     fn test_exchange_asset_to_kt() {
         assert_eq!(
             exchange_asset_to_kt(1_000_000, 6, ExchangePrice::new(1, 6)),
-            1_000_000_000_000_000_000
+            Some(1_000_000_000_000_000_000)
         );
         assert_eq!(
             exchange_asset_to_kt(1_000_000, 6, ExchangePrice::new(10000, 10)),
-            1_000_000_000_000_000_000
+            Some(1_000_000_000_000_000_000)
         );
         assert_eq!(
             exchange_asset_to_kt(1_000_000, 6, ExchangePrice::new(20000, 10)),
-            500_000_000_000_000_000
+            Some(500_000_000_000_000_000)
         );
         assert_eq!(
             exchange_asset_to_kt(1_000_000, 6, ExchangePrice::new(5000, 10)),
-            2_000_000_000_000_000_000
+            Some(2_000_000_000_000_000_000)
         );
         assert_eq!(
             exchange_asset_to_kt(1_000_000, 6, ExchangePrice::new(10001, 10)),
-            999_900_009_999_000_099
+            Some(999_900_009_999_000_099)
         );
         assert_eq!(
             exchange_asset_to_kt(1_000_000, 6, ExchangePrice::new(9999, 10)),
-            1_000_100_010_001_000_100
+            Some(1_000_100_010_001_000_100)
         );
-    }
-
-    #[test]
-    fn test_exchange_asset_to_kt_overflow() {
         // Overflow
-        assert!(std::panic::catch_unwind(|| exchange_asset_to_kt(
+        assert!(exchange_asset_to_kt(
             // 100 quadrillions USDC
             100_000_000_000_000_000_000_000,
             6,
             ExchangePrice::new(10000, 10)
-        ))
-        .is_err());
-        assert!(std::panic::catch_unwind(|| exchange_asset_to_kt(
+        )
+        .is_none());
+        assert!(exchange_asset_to_kt(
             // 100 quadrillions DAI
             100_000_000_000_000_000_000_000_000_000_000_000,
             18,
             ExchangePrice::new(10000, 22)
-        ))
-        .is_err());
+        )
+        .is_none());
     }
 
     #[test]
     fn test_exchange_kt_to_asset() {
         assert_eq!(
             exchange_kt_to_asset(1_000_000_000_000_000_000, 6, ExchangePrice::new(1, 6)),
-            1_000_000
+            Some(1_000_000)
         );
         assert_eq!(
             exchange_kt_to_asset(1_000_000_000_000_000_000, 6, ExchangePrice::new(10000, 10)),
-            1_000_000
+            Some(1_000_000)
         );
         assert_eq!(
             exchange_kt_to_asset(500_000_000_000_000_000, 6, ExchangePrice::new(20000, 10)),
-            1_000_000
+            Some(1_000_000)
         );
         assert_eq!(
             exchange_kt_to_asset(2_000_000_000_000_000_000, 6, ExchangePrice::new(5000, 10)),
-            1_000_000
+            Some(1_000_000)
         );
         assert_eq!(
             exchange_kt_to_asset(999_900_009_999_000_099, 6, ExchangePrice::new(10001, 10)),
             // Roudning error
-            999_999
+            Some(999_999)
         );
         assert_eq!(
             exchange_kt_to_asset(1_000_100_010_001_000_100, 6, ExchangePrice::new(9990, 10)),
             // Roudning error
-            999_099
+            Some(999_099)
         );
-    }
-
-    #[test]
-    fn test_exchange_kt_to_asset_overflow() {
         // Overflow
-        assert!(std::panic::catch_unwind(|| exchange_kt_to_asset(
+        assert!(exchange_kt_to_asset(
             // 1 trillion KT
             1_000_000_000_000_000_000_000_000_000_000,
             // Asset -> USDC
             6,
             // oracle price -> 100_000 $
             ExchangePrice::new(1_000_000_000, 10)
-        ))
-        .is_err());
-        assert!(std::panic::catch_unwind(|| exchange_kt_to_asset(
+        )
+        .is_none());
+        assert!(exchange_kt_to_asset(
             // 1 trillion KT
             1_000_000_000_000_000_000_000_000_000_000,
             // Asset -> DAI
             18,
             // oracle price -> 100_000 $
             ExchangePrice::new(1_000_000_000, 22)
-        ))
-        .is_err());
+        )
+        .is_none());
     }
 }

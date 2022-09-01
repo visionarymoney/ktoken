@@ -19,9 +19,9 @@ pub enum AssetStatus {
 #[serde(crate = "near_sdk::serde")]
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 pub struct AssetInfo {
-    decimals: u8,
-    balance: Balance,
-    status: AssetStatus,
+    pub decimals: u8,
+    pub balance: Balance,
+    pub status: AssetStatus,
 }
 
 impl AssetInfo {
@@ -36,14 +36,6 @@ impl AssetInfo {
             balance: 0,
             status: AssetStatus::Enabled,
         }
-    }
-
-    pub fn decimals(&self) -> u8 {
-        self.decimals
-    }
-
-    pub fn balance(&self) -> Balance {
-        self.balance
     }
 }
 #[derive(BorshDeserialize, BorshSerialize)]
