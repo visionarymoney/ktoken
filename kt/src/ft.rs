@@ -15,9 +15,9 @@ use near_sdk::{
     PromiseResult,
 };
 
-use crate::asset::AssetStatus;
 use crate::oracle::ext_oracle;
 use crate::price::ExpectedPrice;
+use crate::treasury::AssetStatus;
 use crate::{
     ext_self, Contract, ContractExt, GAS_FOR_BUY_WITH_PRICE, GAS_FOR_GET_EXCHANGE_PRICE,
     GAS_FOR_ON_TRANSFER, GAS_FOR_RESOLVE_TRANSFER, GAS_FOR_TRANSFER_CALL,

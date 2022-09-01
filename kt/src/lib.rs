@@ -1,4 +1,3 @@
-mod asset;
 mod ft;
 mod oracle;
 mod owner;
@@ -15,7 +14,6 @@ use near_sdk::{
     BorshStorageKey, Gas, PanicOnDefault, Promise, PromiseResult, ONE_YOCTO,
 };
 
-use crate::asset::*;
 use crate::ft::*;
 use crate::oracle::*;
 use crate::price::*;
@@ -102,7 +100,7 @@ impl Contract {
 
         self.treasury.internal_deposit(asset_id, amount);
 
-        let amount = exchange_asset_to_kt(amount, asset.decimals, price);
+        let amount = exchange_asset_to_kt(amount, asset.decimals(), price);
 
         // TODO: withdraw buying fees
         self.token.internal_deposit(account_id, amount);
@@ -136,7 +134,7 @@ impl Contract {
         }
         .emit();
 
-        let asset_amount = exchange_kt_to_asset(amount, asset.decimals, price);
+        let asset_amount = exchange_kt_to_asset(amount, asset.decimals(), price);
 
         self.treasury.internal_withdraw(asset_id, asset_amount);
 
@@ -355,7 +353,10 @@ mod tests {
             .build());
         let price = ExchangePrice::new(10001, 10);
         contract.internal_buy(&account_id, &asset_id, 1_000_000, price);
-        assert_eq!(contract.treasury.supported_assets()[0].1.balance, 1_000_000);
+        assert_eq!(
+            contract.treasury.supported_assets()[0].1.balance(),
+            1_000_000
+        );
         assert_eq!(
             contract.ft_balance_of(account_id).0,
             999_900_009_999_000_099
@@ -380,7 +381,7 @@ mod tests {
         let price = ExchangePrice::new(10001, 10);
         contract.internal_buy(&account_id, &asset_id, 1_000_000, price);
         contract.internal_sell(&account_id, &asset_id, 999_900_009_999_000_099, price);
-        assert_eq!(contract.treasury.supported_assets()[0].1.balance, 1); // Rounding error
+        assert_eq!(contract.treasury.supported_assets()[0].1.balance(), 1); // Rounding error
         assert_eq!(contract.ft_balance_of(account_id).0, 0);
     }
 }

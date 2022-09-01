@@ -3,7 +3,7 @@ use near_sdk::json_types::{U128, U64};
 use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::{env, ext_contract, require, Balance};
 
-use crate::asset::AssetId;
+use crate::treasury::AssetId;
 
 type Timestamp = U64;
 
