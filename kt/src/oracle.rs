@@ -3,7 +3,10 @@ use near_sdk::json_types::{U128, U64};
 use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::{env, ext_contract, require, Balance};
 
+use crate::price::convert_decimals;
 use crate::treasury::{AssetId, AssetInfo};
+
+const PRICE_DECIMALS: u8 = 18;
 
 type Timestamp = U64;
 
@@ -11,7 +14,7 @@ type Timestamp = U64;
 // Price USDC { multiplier: 10000, decimals: 10 }
 // 5 USDC = 5 * 10**6 * 10000 / 10**(10 - 6) = 5 * 10**6
 
-#[derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize, Clone, Copy)]
+#[derive(BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 #[serde(crate = "near_sdk::serde")]
 pub struct Price {
     pub multiplier: U128,
@@ -81,10 +84,11 @@ impl ExchangePrice {
             .price
             .unwrap_or_else(|| env::panic_str("Oracle price is missing"));
 
-        require!(
-            price.decimals >= asset.decimals,
-            "Oracle price wrong decimals"
-        );
+        // price.decimals - asset.decimals
+        let diff = price
+            .decimals
+            .checked_sub(asset.decimals)
+            .unwrap_or_else(|| env::panic_str("Oracle price wrong decimals"));
 
         if price.multiplier.0 == 0 {
             env::panic_str("Oracle price is zero")
@@ -92,8 +96,14 @@ impl ExchangePrice {
 
         Self {
             multiplier: price.multiplier.into(),
-            decimals: price.decimals,
+            decimals: diff,
         }
+    }
+
+    pub fn to_decimals(self) -> u128 {
+        // Stored in decimals due to more precise value
+        convert_decimals(self.multiplier, self.decimals, PRICE_DECIMALS)
+            .unwrap_or_else(|| env::panic_str("Oracle price to decimals overflow"))
     }
 }
 
@@ -105,14 +115,12 @@ mod tests {
 
     #[test]
     fn test_exchange_price() {
-        let multiplier = 1001;
-        let decimals = 10;
         let price = ExchangePrice::from_price_data(
             &AssetInfo::new(6),
-            PriceData::new(false, Some(Price::new(multiplier, decimals))),
+            PriceData::new(false, Some(Price::new(10001, 10))),
         );
-        assert_eq!(price.multiplier, multiplier);
-        assert_eq!(price.decimals, decimals);
+        assert_eq!(price.multiplier, 10001);
+        assert_eq!(price.decimals, 4);
     }
 
     #[test]

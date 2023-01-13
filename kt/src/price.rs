@@ -41,7 +41,7 @@ impl ExpectedPrice {
     }
 }
 
-fn convert_decimals(amount: Balance, from: u8, to: u8) -> Option<Balance> {
+pub fn convert_decimals(amount: Balance, from: u8, to: u8) -> Option<Balance> {
     match from.cmp(&to) {
         std::cmp::Ordering::Equal => Some(amount),
         std::cmp::Ordering::Less => amount.checked_mul(10u128.pow(u32::from(to - from))),

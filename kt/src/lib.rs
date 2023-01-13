@@ -101,7 +101,8 @@ impl Contract {
             .unwrap_or_else(|| env::panic_str("Exchange amount overflow"));
 
         // TODO: withdraw buying fees
-        self.token.internal_deposit(account_id, kt_amount);
+        self.token
+            .internal_deposit(account_id, kt_amount, price.to_decimals());
 
         FtMint {
             owner_id: account_id,
@@ -120,7 +121,8 @@ impl Contract {
         price: ExchangePrice,
     ) -> U128 {
         // TODO: withdraw profit fees
-        self.token.internal_withdraw(account_id, kt_amount);
+        self.token
+            .internal_withdraw(account_id, kt_amount, price.to_decimals());
 
         FtBurn {
             owner_id: account_id,
@@ -188,6 +190,7 @@ pub trait ContractResolver {
         amount: U128,
         asset_id: AssetId,
         asset_amount: U128,
+        price: U128,
     );
 }
 
@@ -239,6 +242,8 @@ impl ContractResolver for Contract {
         let asset_amount =
             self.internal_sell(&account_id, &asset_id, amount.into(), asset.decimals, price);
 
+        let price = price.to_decimals().into();
+
         ext_ft_transfer::ext(asset_id.clone())
             .with_static_gas(GAS_FOR_TRANSFER)
             .with_attached_deposit(ONE_YOCTO)
@@ -246,7 +251,7 @@ impl ContractResolver for Contract {
             .then(
                 ext_self::ext(env::current_account_id())
                     .with_static_gas(GAS_FOR_RESOLVE_SELL)
-                    .resolve_sell(account_id, amount, asset_id, asset_amount),
+                    .resolve_sell(account_id, amount, asset_id, asset_amount, price),
             )
     }
 
@@ -257,6 +262,7 @@ impl ContractResolver for Contract {
         amount: U128,
         asset_id: AssetId,
         asset_amount: U128,
+        price: U128,
     ) {
         match env::promise_result(0) {
             PromiseResult::NotReady => env::abort(),
@@ -264,7 +270,8 @@ impl ContractResolver for Contract {
             PromiseResult::Failed => {
                 self.treasury
                     .internal_deposit(&asset_id, asset_amount.into());
-                self.token.internal_deposit(&account_id, amount.into());
+                self.token
+                    .internal_deposit(&account_id, amount.into(), price.into());
 
                 FtMint {
                     owner_id: &account_id,
@@ -326,7 +333,7 @@ mod tests {
         let mut context = get_context(accounts(0));
         testing_env!(context.build());
         let mut contract = Contract::new(accounts(1), accounts(4));
-        contract.token.internal_deposit(&accounts(2), AMOUNT);
+        contract.token.internal_deposit(&accounts(2), AMOUNT, 1);
 
         testing_env!(context
             .attached_deposit(ONE_YOCTO)
